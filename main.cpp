@@ -2,6 +2,7 @@
 #include <fstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <algorithm>
 #include <cstring>
@@ -13,6 +14,7 @@ const string DATA_FILE = "storage.db";
 
 struct IndexInfo {
     vector<long> offsets;  // File offsets where values for this index are stored
+    unordered_set<int> values;  // Values for O(1) duplicate checking
 };
 
 class FileStorage {
@@ -98,6 +100,7 @@ public:
             if (!dataFile.good() || dataFile.eof()) break;
 
             indexMap[index].offsets.push_back(offset);
+            indexMap[index].values.insert(value);
         }
 
         dataFile.clear(); // Clear flags
@@ -105,25 +108,17 @@ public:
 
     // Insert entry
     void insert(const string& index, int value) {
-        // Check if (index, value) already exists
+        // Check if (index, value) already exists using the value set
         auto it = indexMap.find(index);
-        if (it != indexMap.end()) {
-            // Check all offsets for this index
-            for (long offset : it->second.offsets) {
-                string existingIndex;
-                int existingValue;
-                if (readEntry(offset, existingIndex, existingValue)) {
-                    if (existingValue == value) {
-                        // Already exists, do nothing
-                        return;
-                    }
-                }
-            }
+        if (it != indexMap.end() && it->second.values.count(value)) {
+            // Already exists, do nothing
+            return;
         }
 
         // Write new entry
         long offset = writeEntry(index, value);
         indexMap[index].offsets.push_back(offset);
+        indexMap[index].values.insert(value);
     }
 
     // Delete entry
@@ -133,6 +128,11 @@ public:
             return; // Index doesn't exist
         }
 
+        // Check if value exists
+        if (!it->second.values.count(value)) {
+            return; // Value doesn't exist
+        }
+
         // Find and remove the offset with matching value
         auto& offsets = it->second.offsets;
         for (size_t i = 0; i < offsets.size(); i++) {
@@ -140,8 +140,9 @@ public:
             int existingValue;
             if (readEntry(offsets[i], existingIndex, existingValue)) {
                 if (existingValue == value) {
-                    // Found it, remove from vector
+                    // Found it, remove from vector and set
                     offsets.erase(offsets.begin() + i);
+                    it->second.values.erase(value);
                     if (offsets.empty()) {
                         indexMap.erase(it);
                     }
