@@ -13,7 +13,7 @@ using namespace std;
 const string DATA_FILE = "storage.db";
 
 struct IndexInfo {
-    vector<pair<int, long>> entries;  // (value, offset) pairs sorted by value
+    vector<pair<int, int32_t>> entries;  // (value, offset) pairs sorted by value
 };
 
 class FileStorage {
@@ -22,9 +22,9 @@ private:
     unordered_map<string, IndexInfo> indexMap;
 
     // Write entry to file and return its offset
-    long writeEntry(const string& index, int value) {
+    int32_t writeEntry(const string& index, int value) {
         dataFile.seekp(0, ios::end);
-        long offset = dataFile.tellp();
+        int32_t offset = dataFile.tellp();
 
         uint8_t deleted = 0;  // Not deleted
         uint32_t indexLen = index.length();
@@ -38,7 +38,7 @@ private:
     }
 
     // Read entry from file at given offset, return false if deleted
-    bool readEntry(long offset, string& index, int& value) {
+    bool readEntry(int32_t offset, string& index, int& value) {
         dataFile.seekg(offset);
         if (!dataFile.good()) return false;
 
@@ -59,7 +59,7 @@ private:
     }
 
     // Mark entry at offset as deleted
-    void markDeleted(long offset) {
+    void markDeleted(int32_t offset) {
         dataFile.seekp(offset);  // Seek to beginning of entry
         uint8_t deleted = 1;
         dataFile.write(reinterpret_cast<const char*>(&deleted), sizeof(deleted));
@@ -95,7 +95,7 @@ public:
         dataFile.seekg(0, ios::beg);
 
         while (dataFile.good()) {
-            long offset = dataFile.tellg();
+            int32_t offset = dataFile.tellg();
 
             uint8_t deleted;
             dataFile.read(reinterpret_cast<char*>(&deleted), sizeof(deleted));
