@@ -26,7 +26,9 @@ private:
         dataFile.seekp(0, ios::end);
         long offset = dataFile.tellp();
 
+        uint8_t deleted = 0;  // Not deleted
         uint32_t indexLen = index.length();
+        dataFile.write(reinterpret_cast<const char*>(&deleted), sizeof(deleted));
         dataFile.write(reinterpret_cast<const char*>(&indexLen), sizeof(indexLen));
         dataFile.write(index.c_str(), indexLen);
         dataFile.write(reinterpret_cast<const char*>(&value), sizeof(value));
@@ -35,10 +37,14 @@ private:
         return offset;
     }
 
-    // Read entry from file at given offset
+    // Read entry from file at given offset, return false if deleted
     bool readEntry(long offset, string& index, int& value) {
         dataFile.seekg(offset);
         if (!dataFile.good()) return false;
+
+        uint8_t deleted;
+        dataFile.read(reinterpret_cast<char*>(&deleted), sizeof(deleted));
+        if (!dataFile.good() || deleted) return false;  // Skip deleted entries
 
         uint32_t indexLen;
         dataFile.read(reinterpret_cast<char*>(&indexLen), sizeof(indexLen));
@@ -50,6 +56,14 @@ private:
 
         dataFile.read(reinterpret_cast<char*>(&value), sizeof(value));
         return dataFile.good();
+    }
+
+    // Mark entry at offset as deleted
+    void markDeleted(long offset) {
+        dataFile.seekp(offset);  // Seek to beginning of entry
+        uint8_t deleted = 1;
+        dataFile.write(reinterpret_cast<const char*>(&deleted), sizeof(deleted));
+        dataFile.flush();
     }
 
 public:
@@ -83,6 +97,10 @@ public:
         while (dataFile.good()) {
             long offset = dataFile.tellg();
 
+            uint8_t deleted;
+            dataFile.read(reinterpret_cast<char*>(&deleted), sizeof(deleted));
+            if (!dataFile.good() || dataFile.eof()) break;
+
             uint32_t indexLen;
             dataFile.read(reinterpret_cast<char*>(&indexLen), sizeof(indexLen));
             if (!dataFile.good() || dataFile.eof()) break;
@@ -98,7 +116,10 @@ public:
             dataFile.read(reinterpret_cast<char*>(&value), sizeof(value));
             if (!dataFile.good() || dataFile.eof()) break;
 
-            indexMap[index].entries.push_back({value, offset});
+            // Only add non-deleted entries
+            if (!deleted) {
+                indexMap[index].entries.push_back({value, offset});
+            }
         }
 
         // Sort entries by value for binary search
@@ -154,7 +175,10 @@ public:
             return; // Value doesn't exist
         }
 
-        // Remove the entry
+        // Mark as deleted in file
+        markDeleted(found->second);
+
+        // Remove from memory
         entries.erase(found);
         if (entries.empty()) {
             indexMap.erase(it);
