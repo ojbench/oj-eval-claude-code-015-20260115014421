@@ -14,7 +14,7 @@ const string DATA_FILE = "storage.db";
 
 struct IndexInfo {
     vector<long> offsets;  // File offsets where values for this index are stored
-    unordered_set<int> values;  // Values for O(1) duplicate checking
+    vector<int> values;    // Sorted values for O(log n) duplicate checking
 };
 
 class FileStorage {
@@ -100,7 +100,12 @@ public:
             if (!dataFile.good() || dataFile.eof()) break;
 
             indexMap[index].offsets.push_back(offset);
-            indexMap[index].values.insert(value);
+            indexMap[index].values.push_back(value);
+        }
+
+        // Sort values for binary search
+        for (auto& entry : indexMap) {
+            sort(entry.second.values.begin(), entry.second.values.end());
         }
 
         dataFile.clear(); // Clear flags
@@ -108,17 +113,28 @@ public:
 
     // Insert entry
     void insert(const string& index, int value) {
-        // Check if (index, value) already exists using the value set
+        // Check if (index, value) already exists using binary search
         auto it = indexMap.find(index);
-        if (it != indexMap.end() && it->second.values.count(value)) {
-            // Already exists, do nothing
-            return;
-        }
+        if (it != indexMap.end()) {
+            auto& values = it->second.values;
+            // Binary search for value
+            auto found = lower_bound(values.begin(), values.end(), value);
+            if (found != values.end() && *found == value) {
+                // Already exists, do nothing
+                return;
+            }
+            // Insert in sorted order
+            values.insert(found, value);
 
-        // Write new entry
-        long offset = writeEntry(index, value);
-        indexMap[index].offsets.push_back(offset);
-        indexMap[index].values.insert(value);
+            // Write new entry
+            long offset = writeEntry(index, value);
+            indexMap[index].offsets.push_back(offset);
+        } else {
+            // New index - write entry first to get offset, then update map
+            long offset = writeEntry(index, value);
+            indexMap[index].offsets.push_back(offset);
+            indexMap[index].values.push_back(value);
+        }
     }
 
     // Delete entry
@@ -128,8 +144,10 @@ public:
             return; // Index doesn't exist
         }
 
-        // Check if value exists
-        if (!it->second.values.count(value)) {
+        // Check if value exists using binary search
+        auto& values = it->second.values;
+        auto found = lower_bound(values.begin(), values.end(), value);
+        if (found == values.end() || *found != value) {
             return; // Value doesn't exist
         }
 
@@ -140,9 +158,9 @@ public:
             int existingValue;
             if (readEntry(offsets[i], existingIndex, existingValue)) {
                 if (existingValue == value) {
-                    // Found it, remove from vector and set
+                    // Found it, remove from both vectors
                     offsets.erase(offsets.begin() + i);
-                    it->second.values.erase(value);
+                    values.erase(found);
                     if (offsets.empty()) {
                         indexMap.erase(it);
                     }
@@ -155,23 +173,13 @@ public:
     // Find all values for an index
     void find(const string& index) {
         auto it = indexMap.find(index);
-        if (it == indexMap.end() || it->second.offsets.empty()) {
+        if (it == indexMap.end() || it->second.values.empty()) {
             cout << "null" << endl;
             return;
         }
 
-        // Read all values
-        vector<int> values;
-        for (long offset : it->second.offsets) {
-            string existingIndex;
-            int value;
-            if (readEntry(offset, existingIndex, value)) {
-                values.push_back(value);
-            }
-        }
-
-        // Sort and output
-        sort(values.begin(), values.end());
+        // Values are already sorted, just output them
+        const auto& values = it->second.values;
         for (size_t i = 0; i < values.size(); i++) {
             if (i > 0) cout << " ";
             cout << values[i];
