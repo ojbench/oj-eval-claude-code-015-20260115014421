@@ -13,8 +13,7 @@ using namespace std;
 const string DATA_FILE = "storage.db";
 
 struct IndexInfo {
-    vector<long> offsets;  // File offsets where values for this index are stored
-    vector<int> values;    // Sorted values for O(log n) duplicate checking
+    vector<pair<int, long>> entries;  // (value, offset) pairs sorted by value
 };
 
 class FileStorage {
@@ -99,13 +98,12 @@ public:
             dataFile.read(reinterpret_cast<char*>(&value), sizeof(value));
             if (!dataFile.good() || dataFile.eof()) break;
 
-            indexMap[index].offsets.push_back(offset);
-            indexMap[index].values.push_back(value);
+            indexMap[index].entries.push_back({value, offset});
         }
 
-        // Sort values for binary search
+        // Sort entries by value for binary search
         for (auto& entry : indexMap) {
-            sort(entry.second.values.begin(), entry.second.values.end());
+            sort(entry.second.entries.begin(), entry.second.entries.end());
         }
 
         dataFile.clear(); // Clear flags
@@ -116,24 +114,25 @@ public:
         // Check if (index, value) already exists using binary search
         auto it = indexMap.find(index);
         if (it != indexMap.end()) {
-            auto& values = it->second.values;
+            auto& entries = it->second.entries;
             // Binary search for value
-            auto found = lower_bound(values.begin(), values.end(), value);
-            if (found != values.end() && *found == value) {
+            auto found = lower_bound(entries.begin(), entries.end(), make_pair(value, 0L),
+                [](const pair<int, long>& a, const pair<int, long>& b) {
+                    return a.first < b.first;
+                });
+            if (found != entries.end() && found->first == value) {
                 // Already exists, do nothing
                 return;
             }
-            // Insert in sorted order
-            values.insert(found, value);
 
             // Write new entry
             long offset = writeEntry(index, value);
-            indexMap[index].offsets.push_back(offset);
+            // Insert in sorted order
+            entries.insert(found, {value, offset});
         } else {
-            // New index - write entry first to get offset, then update map
+            // New index - write entry first
             long offset = writeEntry(index, value);
-            indexMap[index].offsets.push_back(offset);
-            indexMap[index].values.push_back(value);
+            indexMap[index].entries.push_back({value, offset});
         }
     }
 
@@ -144,45 +143,37 @@ public:
             return; // Index doesn't exist
         }
 
-        // Check if value exists using binary search
-        auto& values = it->second.values;
-        auto found = lower_bound(values.begin(), values.end(), value);
-        if (found == values.end() || *found != value) {
+        // Find value using binary search
+        auto& entries = it->second.entries;
+        auto found = lower_bound(entries.begin(), entries.end(), make_pair(value, 0L),
+            [](const pair<int, long>& a, const pair<int, long>& b) {
+                return a.first < b.first;
+            });
+
+        if (found == entries.end() || found->first != value) {
             return; // Value doesn't exist
         }
 
-        // Find and remove the offset with matching value
-        auto& offsets = it->second.offsets;
-        for (size_t i = 0; i < offsets.size(); i++) {
-            string existingIndex;
-            int existingValue;
-            if (readEntry(offsets[i], existingIndex, existingValue)) {
-                if (existingValue == value) {
-                    // Found it, remove from both vectors
-                    offsets.erase(offsets.begin() + i);
-                    values.erase(found);
-                    if (offsets.empty()) {
-                        indexMap.erase(it);
-                    }
-                    return;
-                }
-            }
+        // Remove the entry
+        entries.erase(found);
+        if (entries.empty()) {
+            indexMap.erase(it);
         }
     }
 
     // Find all values for an index
     void find(const string& index) {
         auto it = indexMap.find(index);
-        if (it == indexMap.end() || it->second.values.empty()) {
+        if (it == indexMap.end() || it->second.entries.empty()) {
             cout << "null" << endl;
             return;
         }
 
         // Values are already sorted, just output them
-        const auto& values = it->second.values;
-        for (size_t i = 0; i < values.size(); i++) {
+        const auto& entries = it->second.entries;
+        for (size_t i = 0; i < entries.size(); i++) {
             if (i > 0) cout << " ";
-            cout << values[i];
+            cout << entries[i].first;
         }
         cout << endl;
     }
