@@ -13,7 +13,7 @@ using namespace std;
 const string DATA_FILE = "storage.db";
 
 struct IndexInfo {
-    vector<pair<int, int32_t>> entries;  // (value, offset) pairs sorted by value
+    vector<int> values;  // Sorted values for this index
 };
 
 class FileStorage {
@@ -21,10 +21,9 @@ private:
     fstream dataFile;
     unordered_map<string, IndexInfo> indexMap;
 
-    // Write entry to file and return its offset
-    int32_t writeEntry(const string& index, int value) {
+    // Write entry to file
+    void writeEntry(const string& index, int value) {
         dataFile.seekp(0, ios::end);
-        int32_t offset = dataFile.tellp();
 
         uint8_t deleted = 0;  // Not deleted
         uint32_t indexLen = index.length();
@@ -34,36 +33,44 @@ private:
         dataFile.write(reinterpret_cast<const char*>(&value), sizeof(value));
 
         dataFile.flush();
-        return offset;
     }
 
-    // Read entry from file at given offset, return false if deleted
-    bool readEntry(int32_t offset, string& index, int& value) {
-        dataFile.seekg(offset);
-        if (!dataFile.good()) return false;
+    // Find and mark entry as deleted by scanning file
+    void markDeleted(const string& targetIndex, int targetValue) {
+        dataFile.seekg(0, ios::beg);
 
-        uint8_t deleted;
-        dataFile.read(reinterpret_cast<char*>(&deleted), sizeof(deleted));
-        if (!dataFile.good() || deleted) return false;  // Skip deleted entries
+        while (dataFile.good()) {
+            int32_t offset = dataFile.tellg();
 
-        uint32_t indexLen;
-        dataFile.read(reinterpret_cast<char*>(&indexLen), sizeof(indexLen));
-        if (!dataFile.good() || indexLen > 256) return false;
+            uint8_t deleted;
+            dataFile.read(reinterpret_cast<char*>(&deleted), sizeof(deleted));
+            if (!dataFile.good() || dataFile.eof()) break;
 
-        index.resize(indexLen);
-        dataFile.read(&index[0], indexLen);
-        if (!dataFile.good()) return false;
+            uint32_t indexLen;
+            dataFile.read(reinterpret_cast<char*>(&indexLen), sizeof(indexLen));
+            if (!dataFile.good() || dataFile.eof()) break;
 
-        dataFile.read(reinterpret_cast<char*>(&value), sizeof(value));
-        return dataFile.good();
-    }
+            if (indexLen > 256) break;
 
-    // Mark entry at offset as deleted
-    void markDeleted(int32_t offset) {
-        dataFile.seekp(offset);  // Seek to beginning of entry
-        uint8_t deleted = 1;
-        dataFile.write(reinterpret_cast<const char*>(&deleted), sizeof(deleted));
-        dataFile.flush();
+            string index;
+            index.resize(indexLen);
+            dataFile.read(&index[0], indexLen);
+            if (!dataFile.good() || dataFile.eof()) break;
+
+            int value;
+            dataFile.read(reinterpret_cast<char*>(&value), sizeof(value));
+            if (!dataFile.good() || dataFile.eof()) break;
+
+            // Check if this is the entry to delete
+            if (!deleted && index == targetIndex && value == targetValue) {
+                dataFile.seekp(offset);
+                uint8_t del = 1;
+                dataFile.write(reinterpret_cast<const char*>(&del), sizeof(del));
+                dataFile.flush();
+                return;
+            }
+        }
+        dataFile.clear();
     }
 
 public:
@@ -118,13 +125,13 @@ public:
 
             // Only add non-deleted entries
             if (!deleted) {
-                indexMap[index].entries.push_back({value, offset});
+                indexMap[index].values.push_back(value);
             }
         }
 
-        // Sort entries by value for binary search
+        // Sort values for binary search
         for (auto& entry : indexMap) {
-            sort(entry.second.entries.begin(), entry.second.entries.end());
+            sort(entry.second.values.begin(), entry.second.values.end());
         }
 
         dataFile.clear(); // Clear flags
@@ -135,25 +142,22 @@ public:
         // Check if (index, value) already exists using binary search
         auto it = indexMap.find(index);
         if (it != indexMap.end()) {
-            auto& entries = it->second.entries;
+            auto& values = it->second.values;
             // Binary search for value
-            auto found = lower_bound(entries.begin(), entries.end(), make_pair(value, 0L),
-                [](const pair<int, long>& a, const pair<int, long>& b) {
-                    return a.first < b.first;
-                });
-            if (found != entries.end() && found->first == value) {
+            auto found = lower_bound(values.begin(), values.end(), value);
+            if (found != values.end() && *found == value) {
                 // Already exists, do nothing
                 return;
             }
-
-            // Write new entry
-            long offset = writeEntry(index, value);
             // Insert in sorted order
-            entries.insert(found, {value, offset});
+            values.insert(found, value);
+
+            // Write new entry to file
+            writeEntry(index, value);
         } else {
-            // New index - write entry first
-            long offset = writeEntry(index, value);
-            indexMap[index].entries.push_back({value, offset});
+            // New index
+            indexMap[index].values.push_back(value);
+            writeEntry(index, value);
         }
     }
 
@@ -165,22 +169,19 @@ public:
         }
 
         // Find value using binary search
-        auto& entries = it->second.entries;
-        auto found = lower_bound(entries.begin(), entries.end(), make_pair(value, 0L),
-            [](const pair<int, long>& a, const pair<int, long>& b) {
-                return a.first < b.first;
-            });
+        auto& values = it->second.values;
+        auto found = lower_bound(values.begin(), values.end(), value);
 
-        if (found == entries.end() || found->first != value) {
+        if (found == values.end() || *found != value) {
             return; // Value doesn't exist
         }
 
-        // Mark as deleted in file
-        markDeleted(found->second);
+        // Mark as deleted in file (this scans the file)
+        markDeleted(index, value);
 
         // Remove from memory
-        entries.erase(found);
-        if (entries.empty()) {
+        values.erase(found);
+        if (values.empty()) {
             indexMap.erase(it);
         }
     }
@@ -188,16 +189,16 @@ public:
     // Find all values for an index
     void find(const string& index) {
         auto it = indexMap.find(index);
-        if (it == indexMap.end() || it->second.entries.empty()) {
+        if (it == indexMap.end() || it->second.values.empty()) {
             cout << "null" << endl;
             return;
         }
 
         // Values are already sorted, just output them
-        const auto& entries = it->second.entries;
-        for (size_t i = 0; i < entries.size(); i++) {
+        const auto& values = it->second.values;
+        for (size_t i = 0; i < values.size(); i++) {
             if (i > 0) cout << " ";
-            cout << entries[i].first;
+            cout << values[i];
         }
         cout << endl;
     }
